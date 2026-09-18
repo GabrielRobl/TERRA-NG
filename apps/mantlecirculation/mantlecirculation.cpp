@@ -288,12 +288,14 @@ Result<> run( const Parameters& prm )
         .apply_surface = true };
 
     // Loading checkpoint
+    ScalarType model_time_from_checkpoint = ScalarType( 0 );
     if ( prm.io_parameters.load_checkpoint )
     {
         load_temperature_checkpoint(
             u.block_1(),
             T,
             T_fct,
+            model_time_from_checkpoint,
             ( *domains[velocity_level] ),
             coords_shell[velocity_level],
             coords_radii[velocity_level],
@@ -430,18 +432,11 @@ Result<> run( const Parameters& prm )
         return fields;
     };
 
-    // Setting XDMF file padding width according to max_timesteps.
-    xdmf_output->set_pad_width(
-        std::to_string( prm.time_stepping_parameters.timestep_initial + prm.time_stepping_parameters.max_timesteps - 1 )
-            .size() );
+    // Store in xdmf output whether their content is dimensional or not.
     xdmf_output->set_is_dimensional( prm.devel_parameters.output_dimensional );
 
     if ( prm.io_parameters.output_pressure )
     {
-        xdmf_output_pressure->set_pad_width(
-            std::to_string(
-                prm.time_stepping_parameters.timestep_initial + prm.time_stepping_parameters.max_timesteps - 1 )
-                .size() );
         xdmf_output_pressure->set_is_dimensional( prm.devel_parameters.output_dimensional );
     }
 
@@ -482,31 +477,42 @@ Result<> run( const Parameters& prm )
             plate_velocity_nondim_scale );
     }
 
-    // ----- Initial Stokes solve -----
-    logroot << "\n--------- Initial Stokes solve -----------------\n" << std::endl;
+    // If we start from a checkpoint but it is not supposed to be a continuation of the simulation
+    // (continue_simulation == false), determine initial velocities through stokes solve.
+    // Else, use the velocities read from checkpoint and skip stokes solve.
+    if ( !prm.io_parameters.load_checkpoint || !prm.io_parameters.continue_simulation )
+    {
+        // ----- Initial Stokes solve -----
+        logroot << "\n--------- Initial Stokes solve -----------------\n" << std::endl;
 
-    // Pass full 3-D density to Stokes for PDA, else radial density profile.
-    if ( pda_form )
-        stokes.solve_pda(
-            pda->density(),
-            pda->drho_dt(), // No density history yet, this should be zeroes.
-            plate_velocities,
-            /*log_convergence=*/true );
+        // Pass full 3-D density to Stokes for PDA, else radial density profile.
+        if ( pda_form )
+            stokes.solve_pda(
+                pda->density(),
+                pda->drho_dt(), // No density history yet, this should be zeroes.
+                plate_velocities,
+                /*log_convergence=*/true );
 
-    else
-        stokes.solve_tala_or_incompressible(
-            Tdev,
-            rho_profile,
-            alpha_profile,
-            plate_velocities,
-            prm.physics_parameters.compressible,
-            /*log_convergence=*/true );
+        else
+            stokes.solve_tala_or_incompressible(
+                Tdev,
+                rho_profile,
+                alpha_profile,
+                plate_velocities,
+                prm.physics_parameters.compressible,
+                /*log_convergence=*/true );
 
-    if ( prm.devel_parameters.extended_diagnostics )
-        log_hbm( "after first Stokes solve (peak)" );
+        if ( prm.devel_parameters.extended_diagnostics )
+            log_hbm( "after first Stokes solve (peak)" );
+    }
 
     ScalarType simulated_time    = ScalarType( 0 );
     ScalarType simulated_time_Ma = ScalarType( 0 );
+    if ( prm.io_parameters.load_checkpoint && prm.io_parameters.continue_simulation )
+    {
+        simulated_time_Ma = model_time_from_checkpoint;
+        simulated_time    = simulated_time_Ma / prm.physics_parameters.calc_time_Ma;
+    }
 
     // We need some global h. Let's, for simplicity (does not need to be too accurate) just choose the smallest h in
     // radial direction.
@@ -588,6 +594,7 @@ Result<> run( const Parameters& prm )
             xdmf_output,
             xdmf_output_pressure,
             prm.time_stepping_parameters.timestep_initial,
+            simulated_time_Ma,
             prm.devel_parameters.output_dimensional,
             fields.scalar_fields,
             fields.vector_fields,
@@ -821,6 +828,9 @@ Result<> run( const Parameters& prm )
 
         } // end Picard loop
 
+        simulated_time += prm.energy_solver_parameters.energy_substeps * dt;
+        simulated_time_Ma = simulated_time * prm.physics_parameters.calc_time_Ma;
+
         // Update density history and store previous timestep length for pda
         dt_prev = dt;
         if ( pda_form )
@@ -843,6 +853,7 @@ Result<> run( const Parameters& prm )
                 xdmf_output,
                 xdmf_output_pressure,
                 timestep,
+                simulated_time_Ma,
                 prm.devel_parameters.output_dimensional,
                 fields.scalar_fields,
                 fields.vector_fields,
@@ -932,9 +943,6 @@ Result<> run( const Parameters& prm )
                 out << timestep << "," << t_end_of_step << "," << Nu_top << "," << Nu_top_fv << "," << V_rms << "\n";
             }
         }
-
-        simulated_time += prm.energy_solver_parameters.energy_substeps * dt;
-        simulated_time_Ma = simulated_time * prm.physics_parameters.calc_time_Ma;
 
         // Log time progress
         if ( prm.boundary_parameters.plate_parameters.apply_plate_velocities )

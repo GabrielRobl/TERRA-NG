@@ -439,6 +439,7 @@ void load_temperature_checkpoint(
     linalg::VectorQ1Vec< ScalarType, 3 >&       u_velocity,
     linalg::VectorQ1Scalar< ScalarType >&       T,
     linalg::VectorFVScalar< ScalarType >&       T_fct,
+    ScalarType&                                 model_time,
     const grid::shell::DistributedDomain&       domain,
     const grid::Grid3DDataVec< ScalarType, 3 >& coords_shell,
     const grid::Grid2DDataScalar< ScalarType >& coords_radii,
@@ -501,6 +502,10 @@ void load_temperature_checkpoint(
     {
         Kokkos::abort( success_temp.error().c_str() );
     }
+
+    // Read checkpoint model time
+    if ( prm.io_parameters.continue_simulation )
+        model_time = io::read_xdmf_model_time( prm.io_parameters.checkpoint_dir, prm.io_parameters.checkpoint_step );
 
     // Nondimensionalise checkpoint, if necessary
     if ( metadata.is_dimensional )
