@@ -236,6 +236,7 @@ Result<> run( const Parameters& prm )
 
     // Fill radial profile arrays
     radial_profile_init(
+        T_ref,
         rho_profile,
         alpha_profile,
         cp_profile,
