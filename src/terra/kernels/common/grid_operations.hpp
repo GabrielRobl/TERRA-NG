@@ -1037,32 +1037,51 @@ void cast( const grid::Grid4DDataScalar< ScalarTypeDst >& dst, const grid::Grid4
     Kokkos::fence();
 }
 
+namespace detail {
+/// @brief Stateless hash-based pseudo-random number generator (splitmix64 finalizer).
+///
+/// Maps a (seed, idx) pair to a uniformly distributed double in [0, 1) using the top 53 bits of the hash.
+/// The result depends only on the arguments, not on thread scheduling or execution space, so filling a field
+/// with it is reproducible for a fixed seed and index layout.
+KOKKOS_INLINE_FUNCTION double hash_to_unit( uint64_t seed, uint64_t idx )
+{
+    uint64_t z = seed + 0x9E3779B97F4A7C15ULL * ( idx + 1 );
+    z          = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ULL;
+    z          = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBULL;
+    z ^= z >> 31;
+    return double( z >> 11 ) * 0x1.0p-53;
+}
+
+} // namespace detail
+
 template < typename ScalarTypeDst >
-void rand( const grid::Grid4DDataScalar< ScalarTypeDst >& dst )
+void rand( const grid::Grid4DDataScalar< ScalarTypeDst >& dst, const uint64_t seed = 12345 )
 {
     static_assert(
         std::is_same_v< ScalarTypeDst, double > || std::is_same_v< ScalarTypeDst, float >,
         "Random integers not implemented. But can be done easily below." );
 
-    Kokkos::Random_XorShift64_Pool<> random_pool( /*seed=*/12345 );
+    const uint64_t e1 = dst.extent( 1 );
+    const uint64_t e2 = dst.extent( 2 );
+    const uint64_t e3 = dst.extent( 3 );
+
     Kokkos::parallel_for(
         "rand",
         Kokkos::MDRangePolicy< Kokkos::Rank< 4, Kokkos::Iterate::Right, Kokkos::Iterate::Right > >(
             { 0, 0, 0, 0 }, { dst.extent( 0 ), dst.extent( 1 ), dst.extent( 2 ), dst.extent( 3 ) } ),
         KOKKOS_LAMBDA( int local_subdomain, int i, int j, int k ) {
-            auto generator                  = random_pool.get_state();
-            dst( local_subdomain, i, j, k ) = static_cast< ScalarTypeDst >( generator.drand() );
-            random_pool.free_state( generator );
+            const uint64_t idx              = ( ( uint64_t( local_subdomain ) * e1 + i ) * e2 + j ) * e3 + k;
+            dst( local_subdomain, i, j, k ) = static_cast< ScalarTypeDst >( detail::hash_to_unit( seed, idx ) );
         } );
 
     Kokkos::fence();
 }
 
 template < typename ScalarTypeDst, int VecDim >
-void rand( const grid::Grid4DDataVec< ScalarTypeDst, VecDim >& dst )
+void rand( const grid::Grid4DDataVec< ScalarTypeDst, VecDim >& dst, const uint64_t seed = 12345 )
 {
     for ( int d = 0; d < VecDim; ++d )
-        rand( dst.comp_[d] );
+        rand( dst.comp_[d], seed + 0x632BE59BD9B4E019ULL * ( d + 1 ) );
 }
 
 } // namespace terra::kernels::common
